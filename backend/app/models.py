@@ -26,6 +26,10 @@ class Problem(Base):
     time_limit_sec: Mapped[float] = mapped_column(Float, default=2.0)
     memory_limit_mb: Mapped[int] = mapped_column(Integer, default=256)
     published: Mapped[bool] = mapped_column(Boolean, default=False)
+    difficulty: Mapped[str | None] = mapped_column(String(8), default="Easy", nullable=True)
+    hint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    time_complexity: Mapped[str | None] = mapped_column(String(64), nullable=True)  # target for the problem
+    space_complexity: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tests: Mapped[list["TestCase"]] = relationship(
         back_populates="problem", cascade="all, delete-orphan", order_by="TestCase.position"
     )
@@ -56,6 +60,8 @@ class Submission(Base):
     runtime_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     memory_kb: Mapped[int | None] = mapped_column(Integer, nullable=True)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claimed_time: Mapped[str | None] = mapped_column(String(64), nullable=True)  # self-reported, not measured
+    claimed_space: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tokens: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON [{position, token}]
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     problem: Mapped[Problem] = relationship()

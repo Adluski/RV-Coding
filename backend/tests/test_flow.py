@@ -4,9 +4,6 @@ import time
 
 import pytest
 
-os.environ["DATABASE_URL"] = "sqlite:///./test_flow.db"
-os.environ["ADMIN_USERNAME"] = "root_admin"
-os.environ["ADMIN_PASSWORD"] = "admin-pass-123"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -30,7 +27,7 @@ def clients():
     yield admin, alice, bob
     engine.dispose()
     try:
-        os.remove("test_flow.db")
+        os.remove("test_suite.db")
     except OSError:
         pass
 
@@ -69,7 +66,7 @@ def test_auth_rules(clients):
 def test_hidden_tests_not_exposed(clients):
     _, alice, _ = clients
     probs = alice.get("/api/problems").json()
-    assert probs and set(probs[0]) == {"id", "title", "solved"}
+    assert probs and set(probs[0]) == {"id", "title", "difficulty", "solved"}
     p = alice.get(f"/api/problems/{probs[0]['id']}")
     body = p.json()
     assert len(body["samples"]) == 2

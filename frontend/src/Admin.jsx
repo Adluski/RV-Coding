@@ -10,7 +10,7 @@ const EXAMPLE_TESTS = JSON.stringify(
   2,
 )
 
-const EMPTY = { id: null, title: '', statement: '', time_limit_sec: 2, memory_limit_mb: 256, published: false, tests: EXAMPLE_TESTS }
+const EMPTY = { id: null, title: '', statement: '', time_limit_sec: 2, memory_limit_mb: 256, published: false, difficulty: 'Easy', hint: '', time_complexity: '', space_complexity: '', tests: EXAMPLE_TESTS }
 
 export default function Admin() {
   const [problems, setProblems] = useState([])
@@ -47,6 +47,10 @@ export default function Admin() {
       time_limit_sec: Number(form.time_limit_sec),
       memory_limit_mb: Number(form.memory_limit_mb),
       published: form.published,
+      difficulty: form.difficulty,
+      hint: form.hint || null,
+      time_complexity: form.time_complexity || null,
+      space_complexity: form.space_complexity || null,
       tests,
     }
     try {
@@ -81,6 +85,12 @@ export default function Admin() {
         <label>Statement<textarea rows={6} value={form.statement} onChange={set('statement')} required /></label>
         <label>Time limit (seconds)<input type="number" step="0.1" min="0.1" max="15" value={form.time_limit_sec} onChange={set('time_limit_sec')} /></label>
         <label>Memory limit (MB)<input type="number" min="16" max="512" value={form.memory_limit_mb} onChange={set('memory_limit_mb')} /></label>
+        <label>Difficulty
+          <select value={form.difficulty} onChange={set('difficulty')}><option>Easy</option><option>Medium</option><option>Hard</option></select>
+        </label>
+        <label>Hint<textarea rows={3} value={form.hint || ''} onChange={set('hint')} /></label>
+        <label>Target time complexity<input value={form.time_complexity || ''} onChange={set('time_complexity')} maxLength={64} /></label>
+        <label>Target space complexity<input value={form.space_complexity || ''} onChange={set('space_complexity')} maxLength={64} /></label>
         <label className="inline"><input type="checkbox" checked={form.published} onChange={set('published')} /> Published</label>
         <label>Tests (JSON array of {'{input, expected_output, is_sample}'}; order = test position)
           <textarea className="code" rows={12} value={form.tests} onChange={set('tests')} spellCheck={false} />

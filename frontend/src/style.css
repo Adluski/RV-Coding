@@ -24,3 +24,9 @@ button { padding: 6px 14px; font: inherit; cursor: pointer; }
 .v-AC { color: #15803d; }
 .v-WA, .v-TLE, .v-RE, .v-CE { color: #b91c1c; }
 .v-ERR { color: #b45309; }
+.d-Easy { color: #15803d; }
+.d-Medium { color: #b45309; }
+.d-Hard { color: #b91c1c; }
+.badge { font-size: 14px; border: 1px solid currentColor; padding: 1px 8px; vertical-align: middle; }
+details summary { cursor: pointer; }
+section { margin-bottom: 8px; }

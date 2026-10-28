@@ -50,18 +50,27 @@ export function ProblemList() {
     <>
       <h2>Problems</h2>
       {problems.length === 0 && <p>No problems published yet.</p>}
-      <table>
-        <thead><tr><th>#</th><th>Title</th><th>Solved</th></tr></thead>
-        <tbody>
-          {problems.map((p) => (
-            <tr key={p.id}>
-              <td>{p.id}</td>
-              <td><Link to={`/problems/${p.id}`}>{p.title}</Link></td>
-              <td>{p.solved ? '✓' : ''}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {['Easy', 'Medium', 'Hard'].map((level) => {
+        const group = problems.filter((p) => p.difficulty === level)
+        if (group.length === 0) return null
+        return (
+          <section key={level}>
+            <h3 className={'d-' + level}>{level} <span className="muted">({group.filter((p) => p.solved).length}/{group.length} solved)</span></h3>
+            <table>
+              <thead><tr><th>#</th><th>Title</th><th>Solved</th></tr></thead>
+              <tbody>
+                {group.map((p) => (
+                  <tr key={p.id}>
+                    <td>{p.id}</td>
+                    <td><Link to={`/problems/${p.id}`}>{p.title}</Link></td>
+                    <td>{p.solved ? '✓' : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+        )
+      })}
     </>
   )
 }
@@ -83,6 +92,9 @@ export function VerdictBox({ sub }) {
       {sub.runtime_ms != null && <div>Runtime: {sub.runtime_ms} ms</div>}
       {sub.memory_kb != null && <div>Memory: {sub.memory_kb} KB</div>}
       {sub.message && <pre>{sub.message}</pre>}
+      {(sub.claimed_time || sub.claimed_space) && (
+        <div className="muted">Your stated complexity (self-reported, not measured): time {sub.claimed_time || '–'}, space {sub.claimed_space || '–'}</div>
+      )}
     </div>
   )
 }
@@ -94,6 +106,8 @@ export function ProblemPage() {
   const [code, setCode] = useState('')
   const [sub, setSub] = useState(null)
   const [submitError, setSubmitError] = useState('')
+  const [claimedTime, setClaimedTime] = useState('')
+  const [claimedSpace, setClaimedSpace] = useState('')
   const timer = useRef(null)
 
   useEffect(() => () => clearTimeout(timer.current), [])
@@ -112,7 +126,7 @@ export function ProblemPage() {
     setSubmitError('')
     clearTimeout(timer.current)
     try {
-      const { id: sid } = await api('/submissions', { method: 'POST', body: { problem_id: Number(id), language, source_code: code } })
+      const { id: sid } = await api('/submissions', { method: 'POST', body: { problem_id: Number(id), language, source_code: code, claimed_time: claimedTime, claimed_space: claimedSpace } })
       setSub({ id: sid, status: 'pending' })
       poll(sid)
     } catch (e) {
@@ -125,9 +139,22 @@ export function ProblemPage() {
   const busy = sub && sub.status !== 'done'
   return (
     <>
-      <h2>{p.title}</h2>
+      <h2>{p.title} <span className={'badge d-' + p.difficulty}>{p.difficulty}</span></h2>
       <p className="muted">Time limit {p.time_limit_sec}s · Memory limit {p.memory_limit_mb} MB</p>
       <pre className="statement">{p.statement}</pre>
+      {p.hint && (
+        <details className="card">
+          <summary><b>Hint</b> (click to reveal)</summary>
+          <p>{p.hint}</p>
+        </details>
+      )}
+      {(p.time_complexity || p.space_complexity) && (
+        <details className="card">
+          <summary><b>Target complexity</b> (click to reveal; spoils the intended approach)</summary>
+          <p>Time: {p.time_complexity || '–'} · Space: {p.space_complexity || '–'}</p>
+          <p className="muted">This is the complexity of the intended solution. It is not measured from your code; the tests only catch solutions that are far too slow.</p>
+        </details>
+      )}
       <h3>Samples</h3>
       {p.samples.length === 0 && <p>No samples.</p>}
       {p.samples.map((s) => (
@@ -144,6 +171,10 @@ export function ProblemPage() {
           <option value="cpp">C++17</option>
         </select>
       </label>
+      <div className="sample">
+        <label>Your time complexity (optional, e.g. O(n log n))<input value={claimedTime} maxLength={64} onChange={(e) => setClaimedTime(e.target.value)} /></label>
+        <label>Your space complexity (optional, e.g. O(n))<input value={claimedSpace} maxLength={64} onChange={(e) => setClaimedSpace(e.target.value)} /></label>
+      </div>
       <textarea className="code" rows={16} value={code} onChange={(e) => setCode(e.target.value)} spellCheck={false} placeholder="Paste your solution here" />
       <button onClick={submit} disabled={busy || !code.trim()}>{busy ? 'Judging…' : 'Submit'}</button>
       {submitError && <p className="err">{submitError}</p>}
@@ -161,13 +192,14 @@ export function Submissions() {
       <h2>My submissions</h2>
       {rows.length === 0 && <p>No submissions yet.</p>}
       <table>
-        <thead><tr><th>ID</th><th>Problem</th><th>Lang</th><th>Verdict</th><th>Failed test</th><th>Time</th><th>Memory</th><th>When</th></tr></thead>
+        <thead><tr><th>ID</th><th>Problem</th><th>Lang</th><th>Stated time / space</th><th>Verdict</th><th>Failed test</th><th>Time</th><th>Memory</th><th>When</th></tr></thead>
         <tbody>
           {rows.map((s) => (
             <tr key={s.id}>
               <td>{s.id}</td>
               <td><Link to={`/problems/${s.problem_id}`}>{s.problem_title}</Link></td>
               <td>{s.language}</td>
+              <td>{s.claimed_time || s.claimed_space ? `${s.claimed_time || '–'} / ${s.claimed_space || '–'}` : ''}</td>
               <td className={'v-' + s.verdict}>{s.status === 'done' ? s.verdict : 'pending'}</td>
               <td>{s.failed_test ?? ''}</td>
               <td>{s.runtime_ms != null ? s.runtime_ms + ' ms' : ''}</td>

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import config, judging
-from .db import Base, engine, get_db
+from .db import get_db, init_db
 from .errors import ApiError
 from .models import Problem, Submission, TestCase, User
 from .security import admin_user, current_user, hash_password, make_token, verify_password
@@ -19,7 +19,7 @@ from .security import admin_user, current_user, hash_password, make_token, verif
 
 @asynccontextmanager
 async def lifespan(app):
-    Base.metadata.create_all(engine)
+    init_db()
     yield
 
 
@@ -104,7 +104,8 @@ def list_problems(user: User = Depends(current_user), db: Session = Depends(get_
     solved = set(db.scalars(select(Submission.problem_id).where(Submission.user_id == user.id,
                                                                  Submission.verdict == "AC")))
     problems = db.scalars(select(Problem).where(Problem.published == True).order_by(Problem.id))  # noqa: E712
-    return [{"id": p.id, "title": p.title, "solved": p.id in solved} for p in problems]
+    return [{"id": p.id, "title": p.title, "difficulty": p.difficulty or "Easy", "solved": p.id in solved}
+            for p in problems]
 
 
 @app.get("/api/problems/{pid}")
@@ -115,6 +116,8 @@ def get_problem(pid: int, user: User = Depends(current_user), db: Session = Depe
     return {
         "id": p.id, "title": p.title, "statement": p.statement,
         "time_limit_sec": p.time_limit_sec, "memory_limit_mb": p.memory_limit_mb,
+        "difficulty": p.difficulty or "Easy", "hint": p.hint,
+        "time_complexity": p.time_complexity, "space_complexity": p.space_complexity,
         "samples": [{"position": t.position, "input": t.input, "expected_output": t.expected_output}
                     for t in p.tests if t.is_sample],
     }
@@ -125,12 +128,14 @@ class SubmitBody(BaseModel):
     problem_id: int
     language: str
     source_code: str
+    claimed_time: str | None = Field(default=None, max_length=64)
+    claimed_space: str | None = Field(default=None, max_length=64)
 
 
 def sub_json(s: Submission) -> dict:
     return {"id": s.id, "problem_id": s.problem_id, "status": s.status, "verdict": s.verdict,
             "failed_test": s.failed_test, "runtime_ms": s.runtime_ms, "memory_kb": s.memory_kb,
-            "message": s.message}
+            "message": s.message, "claimed_time": s.claimed_time, "claimed_space": s.claimed_space}
 
 
 @app.post("/api/submissions")
@@ -146,7 +151,9 @@ def submit(body: SubmitBody, user: User = Depends(current_user), db: Session = D
         raise ApiError(404, "Problem not found")
     if not p.tests:
         raise ApiError(400, "Problem has no tests")
-    sub = Submission(user_id=user.id, problem_id=p.id, language=body.language, source_code=body.source_code)
+    sub = Submission(user_id=user.id, problem_id=p.id, language=body.language, source_code=body.source_code,
+                      claimed_time=(body.claimed_time or "").strip() or None,
+                      claimed_space=(body.claimed_space or "").strip() or None)
     db.add(sub)
     db.commit()
     judging.start(db, sub, p, list(p.tests))
@@ -214,12 +221,18 @@ class ProblemIn(BaseModel):
     time_limit_sec: float = Field(default=2.0, gt=0, le=15)
     memory_limit_mb: int = Field(default=256, ge=16, le=512)
     published: bool = False
+    difficulty: str = Field(default="Easy", pattern="^(Easy|Medium|Hard)$")
+    hint: str | None = Field(default=None, max_length=5000)
+    time_complexity: str | None = Field(default=None, max_length=64)
+    space_complexity: str | None = Field(default=None, max_length=64)
     tests: list[TestIn] = Field(max_length=100)
 
 
 def problem_admin_json(p: Problem) -> dict:
     return {"id": p.id, "title": p.title, "statement": p.statement, "time_limit_sec": p.time_limit_sec,
             "memory_limit_mb": p.memory_limit_mb, "published": p.published,
+            "difficulty": p.difficulty or "Easy", "hint": p.hint,
+            "time_complexity": p.time_complexity, "space_complexity": p.space_complexity,
             "tests": [{"input": t.input, "expected_output": t.expected_output, "is_sample": t.is_sample}
                       for t in p.tests]}
 
@@ -229,6 +242,8 @@ def apply_problem(p: Problem, body: ProblemIn):
         raise ApiError(400, "A published problem needs at least one test")
     p.title, p.statement = body.title, body.statement
     p.time_limit_sec, p.memory_limit_mb, p.published = body.time_limit_sec, body.memory_limit_mb, body.published
+    p.difficulty, p.hint = body.difficulty, body.hint
+    p.time_complexity, p.space_complexity = body.time_complexity, body.space_complexity
     p.tests = [TestCase(input=t.input, expected_output=t.expected_output, is_sample=t.is_sample, position=i + 1)
                for i, t in enumerate(body.tests)]
 

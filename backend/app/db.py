@@ -33,3 +33,25 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+# Columns added after the first release. create_all() does not alter existing tables, so add them here.
+_NEW_COLUMNS = [
+    ("problems", "difficulty", "VARCHAR(8) DEFAULT 'Easy'"),
+    ("problems", "hint", "TEXT"),
+    ("problems", "time_complexity", "VARCHAR(64)"),
+    ("problems", "space_complexity", "VARCHAR(64)"),
+    ("submissions", "claimed_time", "VARCHAR(64)"),
+    ("submissions", "claimed_space", "VARCHAR(64)"),
+]
+
+
+def init_db():
+    from sqlalchemy import inspect, text
+
+    Base.metadata.create_all(engine)
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table, col, ddl in _NEW_COLUMNS:
+            if col not in {c["name"] for c in insp.get_columns(table)}:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
