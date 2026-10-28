@@ -43,15 +43,29 @@ _NEW_COLUMNS = [
     ("problems", "space_complexity", "VARCHAR(64)"),
     ("submissions", "claimed_time", "VARCHAR(64)"),
     ("submissions", "claimed_space", "VARCHAR(64)"),
+    ("submissions", "test_results", "TEXT"),
 ]
 
 
 def init_db():
+    """Create tables and add missing columns. Safe to run concurrently (two serverless cold starts may race)."""
     from sqlalchemy import inspect, text
+    from sqlalchemy.exc import DBAPIError
 
-    Base.metadata.create_all(engine)
+    try:
+        Base.metadata.create_all(engine)
+    except DBAPIError:
+        Base.metadata.create_all(engine)  # another instance created a table between check and create
+    is_pg = engine.dialect.name == "postgresql"
     insp = inspect(engine)
-    with engine.begin() as conn:
-        for table, col, ddl in _NEW_COLUMNS:
-            if col not in {c["name"] for c in insp.get_columns(table)}:
-                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
+    for table, col, ddl in _NEW_COLUMNS:
+        if col in {c["name"] for c in insp.get_columns(table)}:
+            continue
+        stmt = f"ALTER TABLE {table} ADD COLUMN {'IF NOT EXISTS ' if is_pg else ''}{col} {ddl}"
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(stmt))
+        except DBAPIError:
+            # Lost a race with another instance; fine if the column now exists.
+            if col not in {c["name"] for c in inspect(engine).get_columns(table)}:
+                raise

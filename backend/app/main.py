@@ -1,3 +1,4 @@
+import json
 import re
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -6,15 +7,16 @@ from fastapi import Depends, FastAPI, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import config, judging
+from . import config, judge0, judging
 from .db import get_db, init_db
 from .errors import ApiError
 from .models import Problem, Submission, TestCase, User
-from .security import admin_user, current_user, hash_password, make_token, verify_password
+from .security import (admin_user, current_user, hash_password, make_run_token, make_token, read_run_token,
+                       verify_password)
 
 
 @asynccontextmanager
@@ -61,11 +63,17 @@ def set_cookie(response: Response, user: User):
                         secure=config.IS_PROD, max_age=config.SESSION_DAYS * 86400, path="/")
 
 
+def find_user(db: Session, username: str) -> User | None:
+    return db.scalars(select(User).where(func.lower(User.username) == username.lower()).order_by(User.id)).first()
+
+
 @app.post("/api/auth/register")
 def register(body: Credentials, response: Response, db: Session = Depends(get_db)):
     if not re.fullmatch(r"[A-Za-z0-9_]{3,32}", body.username):
         raise ApiError(400, "Username may only contain letters, digits and underscore (3-32 chars)")
-    if db.scalar(select(User).where(User.username == body.username)):
+    if len(body.password.encode()) > 72:  # bcrypt ignores everything after 72 bytes
+        raise ApiError(400, "Password is too long (maximum 72 bytes)")
+    if find_user(db, body.username):
         raise ApiError(409, "Username already taken")
     user = User(username=body.username, password_hash=hash_password(body.password), role="participant")
     db.add(user)
@@ -80,7 +88,7 @@ def register(body: Credentials, response: Response, db: Session = Depends(get_db
 
 @app.post("/api/auth/login")
 def login(body: Credentials, response: Response, db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.username == body.username))
+    user = find_user(db, body.username)
     if not user or not verify_password(body.password, user.password_hash):
         raise ApiError(401, "Invalid username or password")
     set_cookie(response, user)
@@ -133,22 +141,41 @@ class SubmitBody(BaseModel):
 
 
 def sub_json(s: Submission) -> dict:
-    return {"id": s.id, "problem_id": s.problem_id, "status": s.status, "verdict": s.verdict,
-            "failed_test": s.failed_test, "runtime_ms": s.runtime_ms, "memory_kb": s.memory_kb,
-            "message": s.message, "claimed_time": s.claimed_time, "claimed_space": s.claimed_space}
+    total = len(json.loads(s.tokens)) if s.tokens else None
+    passed = None
+    if s.status == "done" and total is not None:
+        if s.verdict == "AC":
+            passed = total
+        elif s.verdict in ("WA", "TLE", "RE") and s.failed_test:
+            passed = s.failed_test - 1
+    return {"id": s.id, "problem_id": s.problem_id, "language": s.language, "status": s.status,
+            "verdict": s.verdict, "failed_test": s.failed_test, "runtime_ms": s.runtime_ms, "memory_kb": s.memory_kb,
+            "message": s.message, "claimed_time": s.claimed_time, "claimed_space": s.claimed_space,
+            "tests_passed": passed, "tests_total": total,
+            "tests": json.loads(s.test_results) if s.test_results else [],
+            "created_at": s.created_at.isoformat() if s.created_at else None}
+
+
+def check_code(language: str, source_code: str):
+    if language not in config.LANGUAGES:
+        raise ApiError(400, "Language must be 'python' or 'cpp'")
+    if not source_code.strip():
+        raise ApiError(400, "Source code is empty")
+    if len(source_code.encode()) > config.MAX_SOURCE_BYTES:
+        raise ApiError(413, "Source code is larger than 64 KB")
+
+
+def visible_problem(db: Session, pid: int, user: User) -> Problem:
+    p = db.get(Problem, pid)
+    if not p or (not p.published and user.role != "admin"):
+        raise ApiError(404, "Problem not found")
+    return p
 
 
 @app.post("/api/submissions")
 def submit(body: SubmitBody, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    if body.language not in config.LANGUAGES:
-        raise ApiError(400, "Language must be 'python' or 'cpp'")
-    if not body.source_code.strip():
-        raise ApiError(400, "Source code is empty")
-    if len(body.source_code.encode()) > config.MAX_SOURCE_BYTES:
-        raise ApiError(413, "Source code is larger than 64 KB")
-    p = db.get(Problem, body.problem_id)
-    if not p or (not p.published and user.role != "admin"):
-        raise ApiError(404, "Problem not found")
+    check_code(body.language, body.source_code)
+    p = visible_problem(db, body.problem_id, user)
     if not p.tests:
         raise ApiError(400, "Problem has no tests")
     sub = Submission(user_id=user.id, problem_id=p.id, language=body.language, source_code=body.source_code,
@@ -173,8 +200,82 @@ def get_submission(sid: int, user: User = Depends(current_user), db: Session = D
 def my_submissions(user: User = Depends(current_user), db: Session = Depends(get_db)):
     rows = db.scalars(select(Submission).where(Submission.user_id == user.id)
                       .order_by(Submission.id.desc()).limit(200))
-    return [{**sub_json(s), "problem_title": s.problem.title, "language": s.language,
-             "created_at": s.created_at.isoformat()} for s in rows]
+    return [{**sub_json(s), "problem_title": s.problem.title} for s in rows]
+
+
+# ---------- run (try code on samples or custom input; nothing is stored) ----------
+class RunBody(BaseModel):
+    problem_id: int
+    language: str
+    source_code: str
+    custom_input: str | None = None  # None = run the problem's sample tests
+
+
+OUTPUT_CAP = 4000
+
+
+def _cap(text: str | None) -> str:
+    text = text or ""
+    return text if len(text) <= OUTPUT_CAP else text[:OUTPUT_CAP] + "\n... (output truncated)"
+
+
+@app.post("/api/run")
+def run_code(body: RunBody, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    check_code(body.language, body.source_code)
+    p = visible_problem(db, body.problem_id, user)
+    if body.custom_input is not None:
+        if len(body.custom_input.encode()) > config.MAX_SOURCE_BYTES:
+            raise ApiError(413, "Custom input is larger than 64 KB")
+        cases, positions = [(body.custom_input, None)], [None]
+    else:
+        samples = [t for t in p.tests if t.is_sample]
+        if not samples:
+            raise ApiError(400, "This problem has no sample tests. Use custom input instead.")
+        cases, positions = [(t.input, t.expected_output) for t in samples], [t.position for t in samples]
+    try:
+        tokens = judge0.create_batch(body.source_code, body.language, cases, p.time_limit_sec, p.memory_limit_mb)
+    except judge0.Judge0Error as e:
+        raise ApiError(429 if e.throttled else 503, e.message)
+    items = [{"t": tok, "pos": pos} for tok, pos in zip(tokens, positions)]
+    return {"run_token": make_run_token(user.id, p.id, items, body.custom_input is not None)}
+
+
+@app.get("/api/run")
+def run_status(token: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    data = read_run_token(token, user)
+    p = visible_problem(db, data["pid"], user)
+    custom = bool(data.get("custom"))
+    items = data["items"]
+    try:
+        results = judge0.get_batch([it["t"] for it in items], fields=judge0.RUN_FIELDS)
+    except judge0.Judge0Error as e:
+        return {"status": "pending", "message": e.message}
+    # Only sample tests are ever echoed back; re-check is_sample in case an admin edited the problem.
+    samples = {t.position: t for t in p.tests if t.is_sample}
+    cases = []
+    for it in items:
+        r = results.get(it["t"])
+        v = judging.verdict_for(r.get("status_id") if r else None)
+        if v is None:
+            return {"status": "pending", "message": None}
+        if custom and v in ("AC", "WA"):
+            v = "OK"  # no expected output to compare with
+        case = {"position": it["pos"], "verdict": v, "runtime_ms": judging.ms(r), "memory_kb": judging.kb(r),
+                "stdout": _cap(r.get("stdout")), "stderr": _cap(r.get("stderr"))}
+        t = samples.get(it["pos"])
+        if t is not None:
+            case["input"], case["expected_output"] = t.input, t.expected_output
+        cases.append(case)
+    verdict = next((c["verdict"] for c in cases if c["verdict"] not in ("AC", "OK")), "OK" if custom else "AC")
+    compile_output = None
+    if verdict == "CE":
+        compile_output = _cap(next((results[it["t"]].get("compile_output") for it in items
+                                    if results.get(it["t"], {}).get("compile_output")), "Compilation failed"))
+        for c in cases:
+            c["stdout"] = c["stderr"] = ""
+    message = "The judge failed to run this code. Try again." if verdict == "ERR" else None
+    return {"status": "done", "custom": custom, "verdict": verdict, "compile_output": compile_output,
+            "message": message, "cases": cases}
 
 
 # ---------- leaderboard ----------

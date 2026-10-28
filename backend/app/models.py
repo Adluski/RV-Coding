@@ -63,5 +63,6 @@ class Submission(Base):
     claimed_time: Mapped[str | None] = mapped_column(String(64), nullable=True)  # self-reported, not measured
     claimed_space: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tokens: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON [{position, token}]
+    test_results: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON [{position, verdict, runtime_ms, memory_kb}]
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     problem: Mapped[Problem] = relationship()
