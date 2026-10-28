@@ -1,0 +1,80 @@
+# Online Coding Judge (class-project MVP)
+
+FastAPI + SQLAlchemy (Postgres/Neon) backend, React/Vite frontend, hosted Judge0 CE for execution.
+Participants register, solve problems in Python 3 or C++17, and compare on a leaderboard. One admin creates problems.
+
+> **Privacy note:** submitted source code and the problem's tests (including hidden ones) are sent to the hosted Judge0 service (`https://ce.judge0.com` by default). This app has no sandbox of its own.
+
+## Layout
+
+```
+api/index.py          Vercel Python entry (exports the FastAPI app)
+backend/app/          FastAPI app: main.py (routes), judging.py, judge0.py, models.py, security.py
+backend/seed.py       Idempotent seed (admin + sample "A + B" problem)
+backend/tests/        pytest end-to-end flow (uses the real Judge0)
+backend/load_check.py Bounded 20-submission check
+frontend/             React + Vite, plain CSS
+vercel.json           Build + rewrites (/api/* -> Python function, everything else -> SPA)
+```
+
+## Environment variables
+
+See [.env.example](.env.example). Never commit a real `.env`.
+
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | Neon connection string (`postgresql://...?sslmode=require`). Defaults to local SQLite `dev.db`. |
+| `SECRET_KEY` | Signs the login cookie. Use a long random value in production. |
+| `APP_ENV` | Set to `production` for Secure cookies (also auto-on when `VERCEL_ENV=production`). |
+| `ADMIN_USERNAME`, `ADMIN_PASSWORD` | Used by the seed script to create the initial admin (password min 8 chars). |
+| `JUDGE0_URL` | Judge0 CE base URL (default `https://ce.judge0.com`). |
+| `JUDGE0_AUTH_TOKEN`, `JUDGE0_AUTH_HEADER` | Optional auth for a private/keyed Judge0 host. |
+
+## Local setup
+
+```bash
+python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements-dev.txt
+cp .env.example .env   # then export the variables (the app reads the process environment)
+python -m backend.seed
+pip install "uvicorn[standard]"
+uvicorn backend.app.main:app --reload --port 8000
+
+cd frontend && npm install && npm run dev               # http://localhost:5173, proxies /api to :8000
+```
+
+Tests: `python -m pytest backend/tests` (needs internet; takes ~3 min because it waits on the public Judge0; set `SKIP_JUDGE0=1` to skip the live-judging test).
+
+## Deploy to Vercel + Neon
+
+1. Create a Neon project and copy its connection string.
+2. Import this GitHub repo in Vercel (root directory = repo root; `vercel.json` handles the build).
+3. Add env vars: `DATABASE_URL`, `SECRET_KEY`, `APP_ENV=production`, `JUDGE0_URL` (and optionally the auth vars).
+4. Deploy. Then seed the database once from your machine (with the same `DATABASE_URL`, plus `ADMIN_USERNAME` / `ADMIN_PASSWORD` set):
+   `python -m backend.seed`
+5. Open the site, log in as the admin, and submit a test solution.
+
+## Request flow
+
+1. `POST /api/submissions` validates input (language `python`/`cpp`, source ≤ 64 KB), stores a `pending` submission, and sends one Judge0 submission per test via a single batch call (no waiting, Judge0's own expected-output comparison). The Judge0 tokens are saved; the app ID is returned right away.
+2. The browser polls `GET /api/submissions/{id}` every 2 s. Each poll fetches the stored tokens from Judge0; once the tests up to the first failure are finished it stores the verdict and the submission becomes `done`. (This keeps the app serverless-friendly: no background worker.)
+3. Verdicts: `AC`, `WA`, `TLE`, `RE`, `CE`, `ERR`. Only the first failing test's number is shown, never its input/expected output. `ERR` means the judge failed (throttled, unreachable, internal error, or no result within 5 minutes); it is never shown as wrong answer.
+4. Leaderboard: solved desc, wrong asc, earlier "latest first-AC" time. Wrong = `WA`/`TLE`/`RE` before the first AC on solved problems; `CE`/`ERR` not counted; admins excluded.
+
+## Languages
+
+Python 3.8.1 (Judge0 id 71) and C++ (GCC 14.1.0, id 105, `-std=c++17`). Python 3.8 was chosen deliberately: on the public Judge0 instance, Python 3.11/3.12 spent ~1.5 s CPU just starting, which made correct solutions TLE under a 2 s limit. Ids are in [backend/app/config.py](backend/app/config.py).
+
+## Known limitations
+
+- Code runs on a third-party Judge0 service; availability, throttling, and speed are outside this app's control. No hostile-code safety claim is made beyond Judge0's own isolation.
+- Judge0 memory-limit overruns surface as `RE`, not a separate verdict.
+- Limits are per test, using Judge0 CPU time; times vary on the shared public instance.
+- Admin UI is minimal (tests entered as JSON; editing a problem replaces all of its tests; no delete).
+- No rate limiting of this app's own endpoints, no password reset, no CSRF token (relies on SameSite=Lax + JSON bodies).
+- The seed script is run manually; it is not triggered by deployment.
+- Frontend has no automated tests.
+
+## Verification status
+
+See the final report of the implementation session / commit message for what was actually run. Not verified by this repo's checks: a Vercel deployment (requires the owner's Vercel/Neon accounts).
