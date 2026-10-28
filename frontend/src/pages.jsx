@@ -1,233 +1,213 @@
-import { useEffect, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
 import { api } from './api.js'
+import { Check, Diff, Verdict, ago, fmtMem, fmtMs, storage } from './ui.jsx'
 
 function useLoad(path) {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   useEffect(() => {
     setData(null)
+    setError('')
     api(path).then(setData).catch((e) => setError(e.message))
   }, [path])
-  return [data, error]
+  return [data, error, setData]
 }
 
 export function AuthPage({ mode, onAuth }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
   const nav = useNavigate()
+  const login = mode === 'login'
 
   async function submit(e) {
     e.preventDefault()
     setError('')
+    setBusy(true)
     try {
       const u = await api('/auth/' + mode, { method: 'POST', body: { username, password } })
       onAuth(u)
       nav('/')
     } catch (err) {
       setError(err.message)
+    } finally {
+      setBusy(false)
     }
   }
 
   return (
-    <form onSubmit={submit} className="card narrow">
-      <h2>{mode === 'login' ? 'Log in' : 'Register'}</h2>
-      <label>Username<input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required /></label>
-      <label>Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={8} required /></label>
-      {mode === 'register' && <small>Password: at least 8 characters.</small>}
-      {error && <p className="err">{error}</p>}
-      <button type="submit">{mode === 'login' ? 'Log in' : 'Create account'}</button>
-    </form>
-  )
-}
-
-export function ProblemList() {
-  const [problems, error] = useLoad('/problems')
-  if (error) return <p className="err">{error}</p>
-  if (!problems) return <p>Loading…</p>
-  return (
-    <>
-      <h2>Problems</h2>
-      {problems.length === 0 && <p>No problems published yet.</p>}
-      {['Easy', 'Medium', 'Hard'].map((level) => {
-        const group = problems.filter((p) => p.difficulty === level)
-        if (group.length === 0) return null
-        return (
-          <section key={level}>
-            <h3 className={'d-' + level}>{level} <span className="muted">({group.filter((p) => p.solved).length}/{group.length} solved)</span></h3>
-            <table>
-              <thead><tr><th>#</th><th>Title</th><th>Solved</th></tr></thead>
-              <tbody>
-                {group.map((p) => (
-                  <tr key={p.id}>
-                    <td>{p.id}</td>
-                    <td><Link to={`/problems/${p.id}`}>{p.title}</Link></td>
-                    <td>{p.solved ? '✓' : ''}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </section>
-        )
-      })}
-    </>
-  )
-}
-
-const VERDICT_TEXT = {
-  AC: 'Accepted', WA: 'Wrong answer', TLE: 'Time limit exceeded', RE: 'Runtime error',
-  CE: 'Compilation error', ERR: 'Judge error',
-}
-
-export function VerdictBox({ sub }) {
-  if (!sub) return null
-  if (sub.status !== 'done') {
-    return <div className="card">Pending… judging submission #{sub.id}{sub.message ? ` (${sub.message})` : ''}</div>
-  }
-  return (
-    <div className={'card verdict v-' + sub.verdict}>
-      <b>{sub.verdict}</b> — {VERDICT_TEXT[sub.verdict]}
-      {sub.failed_test != null && <div>Failed test: #{sub.failed_test}</div>}
-      {sub.runtime_ms != null && <div>Runtime: {sub.runtime_ms} ms</div>}
-      {sub.memory_kb != null && <div>Memory: {sub.memory_kb} KB</div>}
-      {sub.message && <pre>{sub.message}</pre>}
-      {(sub.claimed_time || sub.claimed_space) && (
-        <div className="muted">Your stated complexity (self-reported, not measured): time {sub.claimed_time || '–'}, space {sub.claimed_space || '–'}</div>
-      )}
+    <div className="auth">
+      <form onSubmit={submit} className="panel auth-card">
+        <div className="eyebrow">rv/coding</div>
+        <h1>{login ? 'Welcome back' : 'Create an account'}</h1>
+        <p className="muted">{login ? 'Sign in to keep solving.' : 'Solve problems in Python or C++ and climb the leaderboard.'}</p>
+        <label className="field">
+          <span>Username</span>
+          <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" autoFocus required />
+        </label>
+        <label className="field">
+          <span>Password</span>
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+            autoComplete={login ? 'current-password' : 'new-password'} minLength={8} required />
+        </label>
+        {!login && <p className="hint-text">Letters, digits and _ for the username. Password: 8 or more characters.</p>}
+        {error && <p className="err">{error}</p>}
+        <button className="btn primary block" type="submit" disabled={busy}>{busy ? 'Please wait…' : login ? 'Log in' : 'Create account'}</button>
+        <p className="muted small switch">
+          {login ? <>New here? <Link to="/register">Create an account</Link></> : <>Already registered? <Link to="/login">Log in</Link></>}
+        </p>
+      </form>
     </div>
   )
 }
 
-export function ProblemPage() {
-  const { id } = useParams()
-  const [p, error] = useLoad(`/problems/${id}`)
-  const [language, setLanguage] = useState('python')
-  const [code, setCode] = useState('')
-  const [sub, setSub] = useState(null)
-  const [submitError, setSubmitError] = useState('')
-  const [claimedTime, setClaimedTime] = useState('')
-  const [claimedSpace, setClaimedSpace] = useState('')
-  const timer = useRef(null)
+const LEVELS = ['Easy', 'Medium', 'Hard']
 
-  useEffect(() => () => clearTimeout(timer.current), [])
+export function ProblemList() {
+  const [problems, error] = useLoad('/problems')
+  const [level, setLevel] = useState(() => storage.get('filter:level') || 'All')
+  const [status, setStatus] = useState('all')
+  const [q, setQ] = useState('')
 
-  async function poll(sid) {
-    try {
-      const s = await api(`/submissions/${sid}`)
-      setSub(s)
-      if (s.status !== 'done') timer.current = setTimeout(() => poll(sid), 2000)
-    } catch (e) {
-      setSubmitError(e.message)
-    }
-  }
+  useEffect(() => storage.set('filter:level', level), [level])
 
-  async function submit() {
-    setSubmitError('')
-    clearTimeout(timer.current)
-    try {
-      const { id: sid } = await api('/submissions', { method: 'POST', body: { problem_id: Number(id), language, source_code: code, claimed_time: claimedTime, claimed_space: claimedSpace } })
-      setSub({ id: sid, status: 'pending' })
-      poll(sid)
-    } catch (e) {
-      setSubmitError(e.message)
-    }
-  }
+  const shown = useMemo(() => (problems || []).filter((p) =>
+    (level === 'All' || p.difficulty === level) &&
+    (status === 'all' || (status === 'solved') === p.solved) &&
+    p.title.toLowerCase().includes(q.trim().toLowerCase())), [problems, level, status, q])
 
   if (error) return <p className="err">{error}</p>
-  if (!p) return <p>Loading…</p>
-  const busy = sub && sub.status !== 'done'
+  if (!problems) return <p className="muted">Loading problems…</p>
+
+  const solvedTotal = problems.filter((p) => p.solved).length
   return (
     <>
-      <h2>{p.title} <span className={'badge d-' + p.difficulty}>{p.difficulty}</span></h2>
-      <p className="muted">Time limit {p.time_limit_sec}s · Memory limit {p.memory_limit_mb} MB</p>
-      <pre className="statement">{p.statement}</pre>
-      {p.hint && (
-        <details className="card">
-          <summary><b>Hint</b> (click to reveal)</summary>
-          <p>{p.hint}</p>
-        </details>
-      )}
-      {(p.time_complexity || p.space_complexity) && (
-        <details className="card">
-          <summary><b>Target complexity</b> (click to reveal; spoils the intended approach)</summary>
-          <p>Time: {p.time_complexity || '–'} · Space: {p.space_complexity || '–'}</p>
-          <p className="muted">This is the complexity of the intended solution. It is not measured from your code; the tests only catch solutions that are far too slow.</p>
-        </details>
-      )}
-      <h3>Samples</h3>
-      {p.samples.length === 0 && <p>No samples.</p>}
-      {p.samples.map((s) => (
-        <div className="sample" key={s.position}>
-          <div><b>Input</b><pre>{s.input}</pre></div>
-          <div><b>Output</b><pre>{s.expected_output}</pre></div>
+      <div className="page-head">
+        <div>
+          <h1>Problems</h1>
+          <p className="muted">{solvedTotal} of {problems.length} solved</p>
         </div>
-      ))}
-      <h3>Submit</h3>
-      <p className="muted">Your code and the problem tests are sent to the hosted Judge0 service for execution.</p>
-      <label>Language
-        <select value={language} onChange={(e) => setLanguage(e.target.value)}>
-          <option value="python">Python 3</option>
-          <option value="cpp">C++17</option>
-        </select>
-      </label>
-      <div className="sample">
-        <label>Your time complexity (optional, e.g. O(n log n))<input value={claimedTime} maxLength={64} onChange={(e) => setClaimedTime(e.target.value)} /></label>
-        <label>Your space complexity (optional, e.g. O(n))<input value={claimedSpace} maxLength={64} onChange={(e) => setClaimedSpace(e.target.value)} /></label>
+        <div className="stats">
+          {LEVELS.map((l) => {
+            const all = problems.filter((p) => p.difficulty === l)
+            const done = all.filter((p) => p.solved).length
+            return (
+              <div className="stat" key={l}>
+                <div className="stat-top"><Diff d={l} /><span className="mono">{done}/{all.length}</span></div>
+                <div className="bar"><div className={'fill f-' + l} style={{ width: all.length ? (100 * done) / all.length + '%' : 0 }} /></div>
+              </div>
+            )
+          })}
+        </div>
       </div>
-      <textarea className="code" rows={16} value={code} onChange={(e) => setCode(e.target.value)} spellCheck={false} placeholder="Paste your solution here" />
-      <button onClick={submit} disabled={busy || !code.trim()}>{busy ? 'Judging…' : 'Submit'}</button>
-      {submitError && <p className="err">{submitError}</p>}
-      <VerdictBox sub={sub} />
+
+      <div className="toolbar">
+        <div className="seg" role="tablist">
+          {['All', ...LEVELS].map((l) => (
+            <button key={l} role="tab" aria-selected={level === l} className={level === l ? 'on' : ''} onClick={() => setLevel(l)}>{l}</button>
+          ))}
+        </div>
+        <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status filter">
+          <option value="all">Any status</option>
+          <option value="solved">Solved</option>
+          <option value="unsolved">Unsolved</option>
+        </select>
+        <input className="search" placeholder="Search problems" value={q} onChange={(e) => setQ(e.target.value)} />
+      </div>
+
+      <div className="panel flush">
+        <table className="list">
+          <thead><tr><th className="w-status" /><th>Title</th><th className="w-diff">Difficulty</th></tr></thead>
+          <tbody>
+            {shown.map((p) => (
+              <tr key={p.id}>
+                <td className="w-status">{p.solved && <Check />}</td>
+                <td><Link to={`/problems/${p.id}`} className="row-link"><span className="mono dim">{p.id}.</span> {p.title}</Link></td>
+                <td className="w-diff"><Diff d={p.difficulty} /></td>
+              </tr>
+            ))}
+            {shown.length === 0 && <tr><td colSpan={3} className="muted center-pad">No problems match these filters.</td></tr>}
+          </tbody>
+        </table>
+      </div>
     </>
   )
 }
 
 export function Submissions() {
-  const [rows, error] = useLoad('/submissions')
+  const [rows, error, setRows] = useLoad('/submissions')
+
+  // Keep pending rows fresh: poll each one every 2 s until it is judged.
+  const pendingIds = (rows || []).filter((r) => r.status !== 'done').map((r) => r.id).join(',')
+  useEffect(() => {
+    if (!pendingIds) return
+    const t = setTimeout(async () => {
+      const updates = await Promise.all(pendingIds.split(',').map((id) => api(`/submissions/${id}`).catch(() => null)))
+      setRows((cur) => cur.map((r) => {
+        const u = updates.find((x) => x && x.id === r.id)
+        return u ? { ...r, ...u } : r
+      }))
+    }, 2000)
+    return () => clearTimeout(t)
+  }, [pendingIds, rows, setRows])
+
   if (error) return <p className="err">{error}</p>
-  if (!rows) return <p>Loading…</p>
+  if (!rows) return <p className="muted">Loading submissions…</p>
   return (
     <>
-      <h2>My submissions</h2>
-      {rows.length === 0 && <p>No submissions yet.</p>}
-      <table>
-        <thead><tr><th>ID</th><th>Problem</th><th>Lang</th><th>Stated time / space</th><th>Verdict</th><th>Failed test</th><th>Time</th><th>Memory</th><th>When</th></tr></thead>
-        <tbody>
-          {rows.map((s) => (
-            <tr key={s.id}>
-              <td>{s.id}</td>
-              <td><Link to={`/problems/${s.problem_id}`}>{s.problem_title}</Link></td>
-              <td>{s.language}</td>
-              <td>{s.claimed_time || s.claimed_space ? `${s.claimed_time || '–'} / ${s.claimed_space || '–'}` : ''}</td>
-              <td className={'v-' + s.verdict}>{s.status === 'done' ? s.verdict : 'pending'}</td>
-              <td>{s.failed_test ?? ''}</td>
-              <td>{s.runtime_ms != null ? s.runtime_ms + ' ms' : ''}</td>
-              <td>{s.memory_kb != null ? s.memory_kb + ' KB' : ''}</td>
-              <td>{new Date(s.created_at).toLocaleString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="page-head"><div><h1>Submissions</h1><p className="muted">Your last {rows.length} submissions, newest first.</p></div></div>
+      {rows.length === 0 ? (
+        <div className="panel empty">No submissions yet. <Link to="/">Pick a problem</Link> to get started.</div>
+      ) : (
+        <div className="panel flush scroll-x">
+          <table className="list">
+            <thead><tr><th>Problem</th><th>Verdict</th><th>Tests</th><th>Runtime</th><th>Memory</th><th>Lang</th><th>Your complexity</th><th>When</th></tr></thead>
+            <tbody>
+              {rows.map((s) => (
+                <tr key={s.id}>
+                  <td><Link to={`/problems/${s.problem_id}`} className="row-link">{s.problem_title}</Link></td>
+                  <td><Verdict v={s.status === 'done' ? s.verdict : null} long /></td>
+                  <td className="mono">{s.tests_total != null && s.tests_passed != null ? `${s.tests_passed}/${s.tests_total}` : '–'}</td>
+                  <td className="mono">{fmtMs(s.runtime_ms)}</td>
+                  <td className="mono">{fmtMem(s.memory_kb)}</td>
+                  <td className="mono">{s.language === 'cpp' ? 'C++17' : 'Python 3'}</td>
+                  <td className="mono small">{s.claimed_time || s.claimed_space ? `${s.claimed_time || '–'} · ${s.claimed_space || '–'}` : <span className="dim">–</span>}</td>
+                  <td className="muted small" title={new Date(s.created_at).toLocaleString()}>{ago(s.created_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </>
   )
 }
 
-export function Leaderboard() {
+export function Leaderboard({ user }) {
   const [rows, error] = useLoad('/leaderboard')
   if (error) return <p className="err">{error}</p>
-  if (!rows) return <p>Loading…</p>
+  if (!rows) return <p className="muted">Loading leaderboard…</p>
   return (
     <>
-      <h2>Leaderboard</h2>
-      <table>
-        <thead><tr><th>Rank</th><th>User</th><th>Solved</th><th>Wrong attempts</th></tr></thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.username}><td>{r.rank}</td><td>{r.username}</td><td>{r.solved}</td><td>{r.wrong}</td></tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="page-head"><div><h1>Leaderboard</h1><p className="muted">Ranked by problems solved, then fewest wrong attempts before solving, then who finished first.</p></div></div>
+      <div className="panel flush">
+        <table className="list">
+          <thead><tr><th className="w-rank">Rank</th><th>User</th><th className="num">Solved</th><th className="num">Wrong attempts</th></tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.username} className={user && r.username === user.username ? 'me' : ''}>
+                <td className="w-rank"><span className={'rank r' + r.rank}>{r.rank}</span></td>
+                <td>{r.username}{user && r.username === user.username && <span className="you">you</span>}</td>
+                <td className="num mono">{r.solved}</td>
+                <td className="num mono">{r.wrong}</td>
+              </tr>
+            ))}
+            {rows.length === 0 && <tr><td colSpan={4} className="muted center-pad">No participants yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
     </>
   )
 }

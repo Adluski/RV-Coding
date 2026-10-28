@@ -10,3 +10,4 @@ frontend/dist/
 .vercel/
 *.db
 .pytest_cache/
+e2e/shots/

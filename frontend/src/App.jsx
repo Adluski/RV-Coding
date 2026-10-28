@@ -1,12 +1,16 @@
 import { useEffect, useState } from 'react'
-import { Link, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
+import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { api } from './api.js'
-import { AuthPage, Leaderboard, ProblemList, ProblemPage, Submissions } from './pages.jsx'
+import { AuthPage, Leaderboard, ProblemList, Submissions } from './pages.jsx'
+import ProblemPage from './ProblemPage.jsx'
 import Admin from './Admin.jsx'
+import Particles from './Particles.jsx'
 
 export default function App() {
   const [user, setUser] = useState(undefined) // undefined = loading, null = anonymous
   const nav = useNavigate()
+  const loc = useLocation()
+  const wide = loc.pathname.startsWith('/problems/')
 
   useEffect(() => {
     api('/auth/me').then(setUser).catch(() => setUser(null))
@@ -18,44 +22,51 @@ export default function App() {
     nav('/login')
   }
 
-  if (user === undefined) return <p className="wrap">Loading…</p>
-
-  const guard = (el, admin) => (!user ? <Navigate to="/login" /> : admin && user.role !== 'admin' ? <Navigate to="/" /> : el)
+  const guard = (el, admin) =>
+    !user ? <Navigate to="/login" replace /> : admin && user.role !== 'admin' ? <Navigate to="/" replace /> : el
 
   return (
     <>
-      <nav>
-        <b>Online Judge</b>
+      <Particles />
+      <header className="topbar">
+        <Link to="/" className="brand">rv<span>/</span>coding</Link>
         {user && (
-          <>
-            <Link to="/">Problems</Link>
-            <Link to="/submissions">My submissions</Link>
-            <Link to="/leaderboard">Leaderboard</Link>
-            {user.role === 'admin' && <Link to="/admin">Admin</Link>}
-            <span className="spacer" />
-            <span>{user.username}</span>
-            <button onClick={logout}>Log out</button>
-          </>
+          <nav className="links">
+            <NavLink to="/" end>Problems</NavLink>
+            <NavLink to="/submissions">Submissions</NavLink>
+            <NavLink to="/leaderboard">Leaderboard</NavLink>
+            {user.role === 'admin' && <NavLink to="/admin">Admin</NavLink>}
+          </nav>
         )}
-        {!user && (
-          <>
-            <span className="spacer" />
-            <Link to="/login">Log in</Link>
-            <Link to="/register">Register</Link>
-          </>
+        <div className="spacer" />
+        {user ? (
+          <div className="who">
+            <span className="avatar" aria-hidden="true">{user.username[0].toUpperCase()}</span>
+            <span className="who-name">{user.username}</span>
+            <button className="btn ghost sm" onClick={logout}>Log out</button>
+          </div>
+        ) : user === null ? (
+          <nav className="links">
+            <NavLink to="/login">Log in</NavLink>
+            <NavLink to="/register">Register</NavLink>
+          </nav>
+        ) : null}
+      </header>
+      <main className={wide ? 'page wide' : 'page'}>
+        {user === undefined ? (
+          <p className="muted center-pad">Loading…</p>
+        ) : (
+          <Routes>
+            <Route path="/login" element={user ? <Navigate to="/" replace /> : <AuthPage mode="login" onAuth={setUser} />} />
+            <Route path="/register" element={user ? <Navigate to="/" replace /> : <AuthPage mode="register" onAuth={setUser} />} />
+            <Route path="/" element={guard(<ProblemList />)} />
+            <Route path="/problems/:id" element={guard(<ProblemPage />)} />
+            <Route path="/submissions" element={guard(<Submissions />)} />
+            <Route path="/leaderboard" element={guard(<Leaderboard user={user} />)} />
+            <Route path="/admin" element={guard(<Admin />, true)} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
         )}
-      </nav>
-      <main className="wrap">
-        <Routes>
-          <Route path="/login" element={<AuthPage mode="login" onAuth={setUser} />} />
-          <Route path="/register" element={<AuthPage mode="register" onAuth={setUser} />} />
-          <Route path="/" element={guard(<ProblemList />)} />
-          <Route path="/problems/:id" element={guard(<ProblemPage />)} />
-          <Route path="/submissions" element={guard(<Submissions />)} />
-          <Route path="/leaderboard" element={guard(<Leaderboard />)} />
-          <Route path="/admin" element={guard(<Admin />, true)} />
-          <Route path="*" element={<Navigate to="/" />} />
-        </Routes>
       </main>
     </>
   )
